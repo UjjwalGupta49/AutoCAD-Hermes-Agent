@@ -13,8 +13,10 @@ Run with:  python -m pytest tests/tools/test_read_extract.py -v
 import json
 import os
 import tempfile
+import types
 import unittest
 import zipfile
+from unittest.mock import patch
 
 from tools.read_extract import (
     ExtractionError,
@@ -64,11 +66,50 @@ class TestIsExtractable(unittest.TestCase):
         self.assertTrue(is_extractable_document("a.ipynb"))
         self.assertTrue(is_extractable_document("/x/B.DOCX"))
         self.assertTrue(is_extractable_document("report.xlsx"))
+        self.assertTrue(is_extractable_document("design.PDF"))
 
     def test_unrecognized_extensions(self):
         self.assertFalse(is_extractable_document("a.py"))
-        self.assertFalse(is_extractable_document("a.pdf"))
         self.assertFalse(is_extractable_document("a.txt"))
+
+
+class TestPdfExtraction(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="rex_pdf_")
+        self.path = os.path.join(self.tmp, "brief.pdf")
+        with open(self.path, "wb") as fh:
+            fh.write(b"%PDF-fake")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_generated_pdf_text_is_page_delimited(self):
+        class Page:
+            def __init__(self, text):
+                self.text = text
+
+            def extract_text(self, *, extraction_mode):
+                self.extraction_mode = extraction_mode
+                return self.text
+
+        fake_module = types.ModuleType("pypdf")
+        fake_module.PdfReader = lambda _path: type(
+            "Reader", (), {"pages": [Page("Title\nBody"), Page("Table row")]}
+        )()
+        with patch.dict("sys.modules", {"pypdf": fake_module}):
+            text = extract_document_text(self.path)
+        self.assertIn("# -- Page 1 of 2 --", text)
+        self.assertIn("Title\nBody", text)
+        self.assertIn("# -- Page 2 of 2 --", text)
+
+    def test_image_only_pdf_requests_ocr(self):
+        page = type("Page", (), {"extract_text": lambda self, **_kwargs: ""})()
+        fake_module = types.ModuleType("pypdf")
+        fake_module.PdfReader = lambda _path: type("Reader", (), {"pages": [page]})()
+        with patch.dict("sys.modules", {"pypdf": fake_module}):
+            with self.assertRaisesRegex(ExtractionError, "OCR"):
+                extract_document_text(self.path)
 
 
 # ---------------------------------------------------------------------------

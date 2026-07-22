@@ -1,6 +1,7 @@
-"""Stdlib document-to-text extraction for ``read_file``.
+"""Structured document-to-text extraction for ``read_file``.
 
-Supports Jupyter notebooks, DOCX, and XLSX without adding hard dependencies.
+Supports Jupyter notebooks, DOCX, and XLSX with the standard library. PDF
+extraction uses the optional pure-Python ``pypdf`` package.
 Malformed documents raise :class:`ExtractionError`; callers can then fall back to
 normal text/binary handling.
 """
@@ -15,8 +16,10 @@ from xml.etree import ElementTree as ET
 
 __all__ = ["EXTRACTABLE_EXTENSIONS", "ExtractionError", "extract_document_text", "is_extractable_document"]
 
-EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx"})
+EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx", ".pdf"})
 MAX_XLSX_BYTES = 50 * 1024 * 1024
+MAX_PDF_BYTES = 50 * 1024 * 1024
+MAX_PDF_PAGES = 500
 _MAX_XLSX_ROWS_PER_SHEET = 5000
 _MAX_XLSX_COLS = 256
 
@@ -47,6 +50,8 @@ def extract_document_text(path: str) -> str:
         return _extract_docx(path)
     if ext == ".xlsx":
         return _extract_xlsx(path)
+    if ext == ".pdf":
+        return _extract_pdf(path)
     raise ExtractionError(f"Unsupported document type: {path!r}")
 
 
@@ -128,6 +133,39 @@ def _extract_docx(path: str) -> str:
     if not any(line.strip() for line in lines):
         raise ExtractionError("DOCX contains no extractable text")
     return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def _extract_pdf(path: str) -> str:
+    try:
+        if Path(path).stat().st_size > MAX_PDF_BYTES:
+            raise ExtractionError("PDF exceeds the 50 MB extraction limit")
+        from pypdf import PdfReader
+    except ExtractionError:
+        raise
+    except ImportError as exc:
+        raise ExtractionError("PDF extraction requires the pypdf package") from exc
+    except OSError as exc:
+        raise ExtractionError(str(exc)) from exc
+
+    try:
+        reader = PdfReader(path)
+        if len(reader.pages) > MAX_PDF_PAGES:
+            raise ExtractionError(f"PDF exceeds the {MAX_PDF_PAGES}-page extraction limit")
+        pages: list[str] = []
+        for index, page in enumerate(reader.pages, start=1):
+            try:
+                text = page.extract_text(extraction_mode="layout") or ""
+            except TypeError:
+                text = page.extract_text() or ""
+            pages.extend((f"# -- Page {index} of {len(reader.pages)} --", text.rstrip(), ""))
+    except ExtractionError:
+        raise
+    except Exception as exc:
+        raise ExtractionError(f"Could not extract PDF text: {exc}") from exc
+
+    if not any(line.strip() and not line.startswith("# -- Page ") for line in pages):
+        raise ExtractionError("PDF contains no searchable text; OCR is required")
+    return "\n".join(pages).rstrip("\n") + "\n"
 
 
 def _extract_xlsx(path: str) -> str:
