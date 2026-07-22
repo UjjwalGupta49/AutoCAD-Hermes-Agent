@@ -7579,6 +7579,30 @@ def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypat
     assert "state.db unavailable: locking protocol" in resp["error"]["message"]
 
 
+def test_session_list_exposes_last_message_timestamp(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, **_kwargs):
+            return [
+                {
+                    "id": "session-1",
+                    "title": "Bracket design",
+                    "preview": "Create a mounting bracket",
+                    "started_at": 1_700_000_000,
+                    "last_active": 1_700_000_123,
+                    "message_count": 4,
+                    "source": "freecad",
+                }
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.list", "params": {}}
+    )
+
+    assert resp["result"]["sessions"][0]["last_active"] == 1_700_000_123
+
+
 # --------------------------------------------------------------------------
 # session.delete — TUI resume picker `d` key
 # --------------------------------------------------------------------------
